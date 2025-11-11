@@ -163,8 +163,7 @@ def process_file(file_path, debug=False):
             
             # Clean source lines using shared utility
             cleaned_source_lines = [clean_source_line(line, 'go') for line in source_lines]
-            cleaned_source = '
-'.join(cleaned_source_lines)
+            cleaned_source = '\n'.join(cleaned_source_lines)
             new_block, complete = convert_go_block(match, terms, cleaned_source, debug)
             
             if not complete:

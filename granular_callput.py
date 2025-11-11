@@ -14,7 +14,7 @@ def get_callout_pattern():
         r'(.*?)\n'
         r'\s*-{4,}\s*\n'
         r'(.*?)'
-        r'(?=\n\.\w|\n\[source|\n=|--|$)'
+        r'(?=\n\.\w|\n\[source|\n=|--|\Z)'
     )
     return re.compile(pattern_string, re.MULTILINE | re.DOTALL)
 
