@@ -5,23 +5,16 @@ import json
 import argparse
 from collections import defaultdict
 from converter_utils import (
+    get_block_pattern,
     parse_and_replace_definitions,
     detect_edge_cases,
     clean_source_line,
-    get_error_message
+    get_error_message,
+    validate_unique_terms
 )
 
 
 CONVERTIBLE_LANGUAGES = ['yaml', 'yml']
-
-def get_yaml_block_pattern():
-    return re.compile(
-        r'(\[source,([a-zA-Z0-9_-]+).*?\n)'
-        r'(\s*-{4,}\s*\n)'
-        r'(.*?)\s*-{4,}\s*\n'
-        r'(.*?)(?=\n={2,}|\n\[|\n\.|\n--|\n[A-Z]{3,}|\Z)',
-        re.MULTILINE | re.DOTALL | re.IGNORECASE
-    )
 
 def extract_terms_from_source(source_lines):
     """
@@ -75,6 +68,9 @@ def extract_terms_from_source(source_lines):
             else:
                 raise ValueError(get_error_message('empty_term', f'Marker {marker_num} on line {line_num}'))
     
+    # Validate that all extracted terms are unique
+    validate_unique_terms(terms)
+    
     return terms
 
 # parse_and_replace_definitions is now imported from converter_utils
@@ -123,7 +119,7 @@ def process_file(file_path, debug=False):
         print(f"Error: Cannot read {file_path}: {e}", file=sys.stderr)
         return False, 0
     
-    pattern = get_yaml_block_pattern()
+    pattern = get_block_pattern()
     modified_content = content
     converted_blocks = 0
     incomplete = False

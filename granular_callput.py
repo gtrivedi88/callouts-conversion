@@ -4,19 +4,9 @@ import os
 from collections import defaultdict
 import json
 import getopt
+from converter_utils import get_block_pattern
 
 SUPPORTED_LANGUAGES = ['yaml', 'json', 'yml', 'bash', 'sh', 'terminal', 'text', 'conf', 'go', 'python']
-
-def get_callout_pattern():
-    pattern_string = (
-        r'(\s*\[source,([a-zA-Z0-9_\-]+).*?\n)'
-        r'(\s*-{4,}\s*\n)'
-        r'(.*?)\n'
-        r'\s*-{4,}\s*\n'
-        r'(.*?)'
-        r'(?=\n\.\w|\n\[source|\n=|--|\Z)'
-    )
-    return re.compile(pattern_string, re.MULTILINE | re.DOTALL)
 
 def analyze_block(source_content, definition_block_content, debug=False):
     """
@@ -87,7 +77,7 @@ def process_file(file_path, debug=False):
     except Exception:
         return {'status': 'error', 'blocks': []}
     
-    pattern = get_callout_pattern()
+    pattern = get_block_pattern()
     all_blocks = []
     
     for match in pattern.finditer(content):

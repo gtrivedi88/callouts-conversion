@@ -214,16 +214,20 @@ def get_block_pattern():
     """
     Get the standard regex pattern for matching AsciiDoc code blocks with callouts.
     
+    This pattern is used by BOTH the classifier and all converters to ensure consistency.
+    
     Returns:
         re.Pattern: Compiled regex pattern
     """
-    return re.compile(
-        r'(\[source,([a-zA-Z0-9_-]+).*?\n)'
+    pattern_string = (
+        r'(\s*\[source,([a-zA-Z0-9_\-]+).*?\n)'
         r'(\s*-{4,}\s*\n)'
-        r'(.*?)\s*-{4,}\s*\n'
-        r'(.*?)(?=\n={2,}|\n\[|\n\.|\n--|\n[A-Z]{3,}|\Z)',
-        re.MULTILINE | re.DOTALL | re.IGNORECASE
+        r'(.*?)\n'
+        r'\s*-{4,}\s*\n'
+        r'(.*?)'
+        r'(?=\n\.\w|\n\[source|\n=|--|\Z)'
     )
+    return re.compile(pattern_string, re.MULTILINE | re.DOTALL)
 
 
 # Error messages for better user feedback
@@ -234,6 +238,7 @@ ERROR_MESSAGES = {
     'non_sequential': 'Callout markers are not sequential (expected 1, 2, 3... sequence)',
     'duplicate_marker': 'The same marker number appears multiple times',
     'empty_term': 'Cannot extract a meaningful term from the line before the marker',
+    'duplicate_extracted_term': 'The same term was extracted multiple times, which would create an invalid definition list',
 }
 
 
@@ -252,4 +257,37 @@ def get_error_message(error_type, context=''):
     if context:
         return f"{base_message}. {context}"
     return base_message
+
+
+def validate_unique_terms(terms):
+    """
+    Validate that all extracted terms are unique.
+    
+    Raises ValueError if duplicate terms are found, which prevents creating
+    invalid definition lists with duplicate term names.
+    
+    Args:
+        terms (dict): Dictionary mapping marker numbers to term strings
+        
+    Raises:
+        ValueError: If duplicate terms are detected
+    """
+    if not terms:
+        return
+    
+    # Get all term values (excluding None and empty strings)
+    term_values = [v for v in terms.values() if v]
+    
+    # Check for duplicates
+    seen = set()
+    duplicates = set()
+    for term in term_values:
+        if term in seen:
+            duplicates.add(term)
+        seen.add(term)
+    
+    if duplicates:
+        dup_list = ', '.join(f'"{d}"' for d in sorted(duplicates))
+        raise ValueError(get_error_message('duplicate_extracted_term', 
+                                          f'Duplicate terms found: {dup_list}'))
 

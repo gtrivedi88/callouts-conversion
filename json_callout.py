@@ -5,23 +5,16 @@ import json as json_module
 import argparse
 from collections import defaultdict
 from converter_utils import (
+    get_block_pattern,
     parse_and_replace_definitions,
     detect_edge_cases,
     clean_source_line,
-    get_error_message
+    get_error_message,
+    validate_unique_terms
 )
 
 
 CONVERTIBLE_LANGUAGES = ['json']
-
-def get_json_block_pattern():
-    return re.compile(
-        r'(\[source,([a-zA-Z0-9_-]+).*?\n)'
-        r'(\s*-{4,}\s*\n)'
-        r'(.*?)\s*-{4,}\s*\n'
-        r'(.*?)(?=\n={2,}|\n\[|\n\.|\n--|\n[A-Z]{3,}|\Z)',
-        re.MULTILINE | re.DOTALL | re.IGNORECASE
-    )
 
 def extract_terms_from_source(source_lines):
     """
@@ -52,7 +45,13 @@ def extract_terms_from_source(source_lines):
         if marker_num in terms:
             raise ValueError(get_error_message('duplicate_marker', f'Marker {marker_num} on line {line_num}'))
         
-        pre_marker = line[:line.find('<')].strip()
+        # Find the position of the actual callout marker, not just any '<'
+        marker_match = marker_pattern.search(line)
+        if marker_match:
+            pre_marker = line[:marker_match.start()].strip()
+        else:
+            # Fallback if pattern doesn't match (shouldn't happen)
+            pre_marker = line[:line.find('<')].strip()
         
         # Edge case: Comment-only line
         if re.match(r'^(//|#)\s*$', pre_marker):
@@ -61,14 +60,16 @@ def extract_terms_from_source(source_lines):
         
         # Try to extract JSON key from "key": pattern or just "key" pattern
         # Pattern 1: "key": value <marker>
-        key_match = re.search(r'["\']([^"\']+)["\']\s*:', pre_marker)
+        # Use .*? to allow any characters including colons inside quotes
+        key_match = re.search(r'["\'](.*?)["\']\s*:', pre_marker)
         if key_match:
             term = key_match.group(1)
             terms[marker_num] = term
             continue
         
         # Pattern 2: Just a quoted value without colon
-        value_match = re.search(r'["\']([^"\']+)["\']', pre_marker)
+        # Use .*? to allow any characters inside quotes
+        value_match = re.search(r'["\'](.*?)["\']', pre_marker)
         if value_match:
             term = value_match.group(1)
             terms[marker_num] = term
@@ -89,6 +90,9 @@ def extract_terms_from_source(source_lines):
         else:
             raise ValueError(get_error_message('empty_term', f'Marker {marker_num} on line {line_num}'))
     
+    # Validate that all extracted terms are unique
+    validate_unique_terms(terms)
+
     return terms
 
 def convert_json_block(full_match, terms, cleaned_source, debug=False):
@@ -122,7 +126,7 @@ def process_file(file_path, debug=False):
         print(f"Error: Cannot read {file_path}: {e}", file=sys.stderr)
         return False, 0
     
-    pattern = get_json_block_pattern()
+    pattern = get_block_pattern()
     modified_content = content
     converted_blocks = 0
     incomplete = False

@@ -8,33 +8,30 @@ from converter_utils import (
     parse_and_replace_definitions,
     detect_edge_cases,
     clean_source_line,
-    get_error_message
+    get_error_message,
+    validate_unique_terms,
+    get_block_pattern
 )
 
 
 CONVERTIBLE_LANGUAGES = ['bash', 'sh', 'terminal', 'shell', 'console']
 
-def get_shell_block_pattern():
-    return re.compile(
-        r'(\[source,([a-zA-Z0-9_-]+).*?\n)'
-        r'(\s*-{4,}\s*\n)'
-        r'(.*?)\s*-{4,}\s*\n'
-        r'(.*?)(?=\n={2,}|\n\[|\n\.|\n--|\n[A-Z]{3,}|\Z)',
-        re.MULTILINE | re.DOTALL | re.IGNORECASE
-    )
-
 def extract_terms_from_source(source_lines):
     """
     Extract term names from shell/bash source lines before callout markers.
     
+    Uses Specificity-First Logic:
+    1. Variable assignments (VAR=value) - most specific
+    2. Flags (--flag or --flag=value) - medium specificity
+    3. Commands (first token) - least specific
+    
     Shell-specific handling:
-    - Commands: oc create -f file.yaml <1>
-    - Variables: export VAR=value <1>
-    - Options/flags: --namespace=default <1>
-    - File paths: /path/to/file <1>
-    - Preserves full command names
-    - Comment-only callouts (generic term)
-    - Semantic placeholders (flagged)
+    - Variables: export VAR=value <1> -> "VAR"
+    - Options/flags: --namespace=default <1> -> "--namespace"
+    - Commands: oc create -f file.yaml <1> -> "oc"
+    - Quoted strings: "url" <1> -> extract domain or meaningful part
+    - Comment-only callouts -> generic term
+    - Semantic placeholders -> flagged
     """
     # First, check for edge cases
     has_issues, issue_type, issue_desc = detect_edge_cases(source_lines)
@@ -58,49 +55,87 @@ def extract_terms_from_source(source_lines):
         # Remove prompt characters ($ or #) if present
         pre_marker = re.sub(r'^\s*[$#]\s*', '', pre_marker)
         
+        # Remove YAML-style list prefix (- ) if present
+        pre_marker = re.sub(r'^-\s+', '', pre_marker)
+        
         # Edge case: Comment-only line
-        if re.match(r'^#\s*$', pre_marker):
+        if re.match(r'^#\s*$', pre_marker) or not pre_marker:
             terms[marker_num] = f"note-{marker_num}"
             continue
         
-        # Pattern 1: Extract command (first word/token)
-        # For: oc create -f file.yaml <1> -> extract "oc create"
-        command_match = re.match(r'^([a-zA-Z0-9_\-\.\/]+(?:\s+[a-zA-Z0-9_\-]+)?)', pre_marker)
-        if command_match:
-            term = command_match.group(1).strip()
-            terms[marker_num] = term
-            continue
+        # SPECIFICITY-FIRST LOGIC: Check patterns from most specific to least specific
         
-        # Pattern 2: Variable assignment
-        # For: export VAR=value <1> -> extract "VAR"
-        var_match = re.search(r'([A-Z_][A-Z0-9_]*)\s*=', pre_marker)
+        # Priority 1: Variable assignments (most specific)
+        # Patterns: VAR=value, export VAR=value, VAR="value"
+        # Extract: VAR
+        var_match = re.search(r'\b([A-Z_][A-Z0-9_]*)\s*=', pre_marker)
         if var_match:
             term = var_match.group(1)
             terms[marker_num] = term
             continue
         
-        # Pattern 3: Flag or option
-        # For: --namespace=default <1> -> extract "--namespace"
-        flag_match = re.search(r'(-{1,2}[a-zA-Z0-9_\-]+)', pre_marker)
+        # Priority 2: Flags/options (medium specificity)
+        # Patterns: --flag, --flag=value, -f
+        # Extract: just the flag name (stop before =, space, or special chars)
+        # Look for standalone flags (preceded by whitespace or start of string)
+        # Prioritize --flags over -flags to avoid matching dashes in command names
+        flag_match = re.search(r'(?:^|\s)(-{1,2}[a-zA-Z][a-zA-Z0-9_\-]*)', pre_marker)
         if flag_match:
             term = flag_match.group(1)
+            # Prefer longest match (--flag over -f)
+            double_dash = re.search(r'(?:^|\s)(--[a-zA-Z][a-zA-Z0-9_\-]*)', pre_marker)
+            if double_dash:
+                term = double_dash.group(1)
             terms[marker_num] = term
             continue
         
-        # Pattern 4: File path
-        # For: /path/to/file <1> -> extract "file" or full path
-        path_match = re.search(r'([a-zA-Z0-9_\-\./]+)', pre_marker)
-        if path_match:
-            term = path_match.group(1)
+        # Priority 3: Key-value pairs (for echo'd YAML/JSON in shell blocks)
+        # Patterns: key: value, name: "demo", secret: "..."
+        # Extract: key (not the value)
+        # This must come BEFORE quoted strings to avoid extracting the value instead of the key
+        kv_match = re.search(r'^([a-zA-Z0-9_\-\.]+)\s*:', pre_marker.strip())
+        if kv_match:
+            term = kv_match.group(1)
             terms[marker_num] = term
             continue
         
-        # Fallback: use the entire pre-marker content (cleaned)
-        if pre_marker:
-            term = pre_marker.strip()
+        # Priority 4: Quoted strings (file paths, URLs, values)
+        # For: "http://example.com/" -> extract domain
+        # For: file://... or "value" -> extract meaningful part
+        quoted_match = re.search(r'["\']([^"\']+)["\']', pre_marker)
+        if quoted_match:
+            quoted_value = quoted_match.group(1)
+            # For URLs, extract domain
+            if quoted_value.startswith(('http://', 'https://')):
+                domain_match = re.search(r'https?://(?:www\.)?([^/:]+)', quoted_value)
+                if domain_match:
+                    term = domain_match.group(1)
+                else:
+                    term = "url"
+                terms[marker_num] = term
+                continue
+            # For short alphanumeric values, use as-is
+            if len(quoted_value) < 30 and re.match(r'^[\w\-\.]+$', quoted_value):
+                terms[marker_num] = quoted_value
+                continue
+        
+        # Priority 5: Commands (least specific - fallback)
+        # Extract first meaningful token (command name)
+        # For: "oc create -f file.yaml" -> "oc"
+        # For: "export CLUSTER_NAME=..." -> "export" (but this should have matched var pattern above)
+        # Remove common command prefixes like "export", "sudo"
+        clean_line = re.sub(r'^\s*(export|sudo|sh|bash)\s+', '', pre_marker)
+        command_match = re.match(r'([a-zA-Z0-9_\-\.]+)', clean_line)
+        if command_match:
+            term = command_match.group(1)
             terms[marker_num] = term
-        else:
-            raise ValueError(get_error_message('empty_term', f'Marker {marker_num} on line {line_num}'))
+            continue
+        
+        # Fallback: If nothing matches, use generic term
+        terms[marker_num] = f"parameter-{marker_num}"
+    
+    # Validate that all extracted terms are unique
+    validate_unique_terms(terms)
     
     return terms
 
@@ -135,7 +170,7 @@ def process_file(file_path, debug=False):
         print(f"Error: Cannot read {file_path}: {e}", file=sys.stderr)
         return False, 0
     
-    pattern = get_shell_block_pattern()
+    pattern = get_block_pattern()
     modified_content = content
     converted_blocks = 0
     incomplete = False

@@ -19,7 +19,8 @@ from datetime import datetime
 
 # Import our modules
 try:
-    from granular_callput import analyze_block, get_callout_pattern, SUPPORTED_LANGUAGES
+    from granular_callput import analyze_block, SUPPORTED_LANGUAGES
+    from converter_utils import get_block_pattern, clean_source_line
     from yaml_callout import process_file as yaml_process_file
     from json_callout import process_file as json_process_file
     from shell_callout import process_file as shell_process_file
@@ -134,7 +135,7 @@ class CalloutsOrchestrator:
         except Exception as e:
             return None, None, f"Read error: {e}"
         
-        pattern = get_callout_pattern()
+        pattern = get_block_pattern()
         automatable_langs = set()
         manual_issues = []
         has_any_blocks = False
@@ -216,15 +217,16 @@ class CalloutsOrchestrator:
                 
                 self.stats['files_with_source_blocks'] += 1
                 
-                # Categorize
-                if manual_issues:
-                    # Has issues - needs manual review
-                    for issue_type, reason in manual_issues:
-                        self.manual_review_files[issue_type].append((str(file_path), reason))
-                elif automatable_langs:
-                    # Clean for automation
+                # NEW LOGIC: Add to automatable list even if file has some manual blocks
+                # This allows block-level processing to convert what it can
+                if automatable_langs:
                     for lang in automatable_langs:
                         self.automatable_by_lang[lang].add(str(file_path))
+                
+                # Also log manual review issues for reporting
+                if manual_issues:
+                    for issue_type, reason in manual_issues:
+                        self.manual_review_files[issue_type].append((str(file_path), reason))
         
         # Print classification summary
         self._print_classification_summary()
@@ -257,6 +259,162 @@ class CalloutsOrchestrator:
         if self.stats['files_with_errors']:
             print(f"\n❌ Errors: {len(self.stats['files_with_errors'])} files")
     
+    def convert_file_blocks(self, file_path, debug=False):
+        """
+        Convert individual blocks in a file (block-level processing).
+        
+        This method:
+        1. Reads the entire file content into memory
+        2. Loops through every code block
+        3. Classifies and converts each block individually
+        4. Replaces converted blocks in memory
+        5. Writes the modified content back once at the end
+        
+        Returns: (success, blocks_converted_count, blocks_skipped_reasons)
+        """
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+        except Exception as e:
+            return False, 0, [f"Read error: {e}"]
+        
+        pattern = get_block_pattern()
+        modified_content = content
+        blocks_converted = 0
+        blocks_skipped = []
+        
+        # Process each block independently
+        for match in pattern.finditer(content):
+            language = match.group(2).lower()
+            source_content = match.group(4)
+            definition_content = match.group(5)
+            original_block = match.group(0)
+            
+            # Skip unsupported languages
+            if language not in SUPPORTED_LANGUAGES:
+                blocks_skipped.append(f"Unsupported language: {language}")
+                continue
+            
+            # Check if already converted
+            if '::' in definition_content and '<' not in definition_content:
+                if debug:
+                    print(f"     ⏭️  Skipping already-converted block")
+                blocks_skipped.append("Already converted")
+                continue
+            
+            # Analyze the block
+            status, reason = analyze_block(source_content, definition_content, debug)
+            
+            if status != 'automatable':
+                if debug:
+                    print(f"     ⏭️  Skipping block: {status} - {reason}")
+                blocks_skipped.append(f"{status}: {reason}")
+                continue
+            
+            # Route to appropriate converter based on language
+            converter_map = {
+                'yaml': (yaml_process_file, 'yaml'),
+                'yml': (yaml_process_file, 'yaml'),
+                'json': (json_process_file, 'json'),
+                'bash': (shell_process_file, 'shell'),
+                'sh': (shell_process_file, 'shell'),
+                'terminal': (shell_process_file, 'shell'),
+                'shell': (shell_process_file, 'shell'),
+                'console': (shell_process_file, 'shell'),
+                'python': (python_process_file, 'python'),
+                'py': (python_process_file, 'python'),
+                'go': (go_process_file, 'go'),
+                'text': (generic_process_file, 'generic'),
+                'conf': (generic_process_file, 'generic'),
+                'config': (generic_process_file, 'generic'),
+            }
+            
+            if language not in converter_map:
+                blocks_skipped.append(f"No converter for language: {language}")
+                continue
+            
+            converter_func, converter_type = converter_map[language]
+            
+            # For block-level conversion, we need to call the converter's block conversion logic
+            # directly rather than process_file. Let's import the block converters:
+            try:
+                if converter_type == 'yaml':
+                    from yaml_callout import convert_yaml_block, extract_terms_from_source as yaml_extract
+                    terms = yaml_extract(source_content.splitlines())
+                    # Clean source using robust cleaner
+                    cleaned_lines = [clean_source_line(line, 'yaml') for line in source_content.splitlines()]
+                    cleaned_source = '\n'.join(cleaned_lines)
+                    new_block, complete = convert_yaml_block(match, terms, cleaned_source, debug)
+                    
+                elif converter_type == 'json':
+                    from json_callout import convert_json_block, extract_terms_from_source as json_extract
+                    terms = json_extract(source_content.splitlines())
+                    # Clean source using robust cleaner
+                    cleaned_lines = [clean_source_line(line, 'json') for line in source_content.splitlines()]
+                    cleaned_source = '\n'.join(cleaned_lines)
+                    new_block, complete = convert_json_block(match, terms, cleaned_source, debug)
+                    
+                elif converter_type == 'shell':
+                    from shell_callout import convert_shell_block, extract_terms_from_source as shell_extract
+                    terms = shell_extract(source_content.splitlines())
+                    # Clean source using robust cleaner
+                    cleaned_lines = [clean_source_line(line, 'shell') for line in source_content.splitlines()]
+                    cleaned_source = '\n'.join(cleaned_lines)
+                    new_block, complete = convert_shell_block(match, terms, cleaned_source, debug)
+                    
+                elif converter_type == 'python':
+                    from python_callout import convert_python_block, extract_terms_from_source as python_extract
+                    terms = python_extract(source_content.splitlines())
+                    # Clean source using robust cleaner
+                    cleaned_lines = [clean_source_line(line, 'python') for line in source_content.splitlines()]
+                    cleaned_source = '\n'.join(cleaned_lines)
+                    new_block, complete = convert_python_block(match, terms, cleaned_source, debug)
+                    
+                elif converter_type == 'go':
+                    from go_callout import convert_go_block, extract_terms_from_source as go_extract
+                    terms = go_extract(source_content.splitlines())
+                    # Clean source using robust cleaner
+                    cleaned_lines = [clean_source_line(line, 'go') for line in source_content.splitlines()]
+                    cleaned_source = '\n'.join(cleaned_lines)
+                    new_block, complete = convert_go_block(match, terms, cleaned_source, debug)
+                    
+                elif converter_type == 'generic':
+                    from generic_callout import convert_generic_block, extract_terms_from_source as generic_extract
+                    terms = generic_extract(source_content.splitlines())
+                    # Clean source using robust cleaner
+                    cleaned_lines = [clean_source_line(line, 'generic') for line in source_content.splitlines()]
+                    cleaned_source = '\n'.join(cleaned_lines)
+                    new_block, complete = convert_generic_block(match, terms, cleaned_source, debug)
+                
+                else:
+                    blocks_skipped.append(f"Unknown converter type: {converter_type}")
+                    continue
+                
+                if complete:
+                    # Replace this specific block in the content
+                    modified_content = modified_content.replace(original_block, new_block, 1)
+                    blocks_converted += 1
+                    if debug:
+                        print(f"     ✓ Converted block ({language})")
+                else:
+                    blocks_skipped.append(f"Incomplete conversion ({language})")
+                    
+            except Exception as e:
+                if debug:
+                    print(f"     ❌ Error converting block: {e}")
+                blocks_skipped.append(f"Conversion error: {e}")
+                continue
+        
+        # Write back the modified content if anything changed
+        if blocks_converted > 0 and not self.dry_run:
+            try:
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(modified_content)
+            except Exception as e:
+                return False, blocks_converted, blocks_skipped + [f"Write error: {e}"]
+        
+        return True, blocks_converted, blocks_skipped
+
     def convert_files(self):
         """Phase 2: Convert automatable files"""
         if not self.automatable_by_lang:
@@ -312,7 +470,11 @@ class CalloutsOrchestrator:
             self._convert_language_files(generic_files, 'text/conf', generic_process_file)
     
     def _convert_language_files(self, file_list, lang_name, converter_func):
-        """Convert files for a specific language using the appropriate converter"""
+        """
+        Convert files using block-level processing.
+        
+        This ensures one bad block doesn't prevent other blocks in the same file from being converted.
+        """
         print(f"\n📝 Converting {lang_name.upper()} files ({len(file_list)} files)...")
         
         for file_path in sorted(file_list):
@@ -321,15 +483,26 @@ class CalloutsOrchestrator:
                     print(f"   [DRY RUN] Would convert: {file_path}")
                     self.stats['files_converted'][lang_name] += 1
                 else:
-                    # Use the language-specific converter
-                    success, warnings = converter_func(file_path, debug=self.debug)
+                    # Use block-level processing
+                    success, blocks_converted, blocks_skipped = self.convert_file_blocks(file_path, debug=self.debug)
                     
-                    if success:
-                        print(f"   ✓ Converted: {file_path}")
+                    if blocks_converted > 0:
+                        print(f"   ✓ Converted: {file_path} ({blocks_converted} blocks)")
                         self.stats['files_converted'][lang_name] += 1
-                    elif warnings:
-                        print(f"   ⚠ Incomplete: {file_path}")
-                        self.manual_review_files['incomplete_conversion'].append((file_path, 'Incomplete conversion'))
+                        self.stats['blocks_converted'][lang_name] += blocks_converted
+                        
+                        # Log skipped blocks if any
+                        if blocks_skipped and self.debug:
+                            for reason in blocks_skipped:
+                                print(f"      ⏭️  Skipped block: {reason}")
+                    elif blocks_skipped:
+                        print(f"   ⏭️  No blocks converted: {file_path}")
+                        if self.debug:
+                            for reason in blocks_skipped[:3]:  # Show first 3 reasons
+                                print(f"      {reason}")
+                    elif not success:
+                        print(f"   ❌ Error: {file_path}")
+                        self.stats['files_with_errors'].append((file_path, "Conversion failed"))
                     else:
                         self.stats['files_skipped']['no_callouts'].append(file_path)
                         
