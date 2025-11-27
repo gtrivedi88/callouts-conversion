@@ -189,7 +189,22 @@ class CalloutsOrchestrator:
         print(f"🔍 Scanning directory: {self.target_dir}")
         print("=" * 70)
         
-        for root, dirs, files in os.walk(self.target_dir):
+        # Track visited directories to prevent infinite symlink loops
+        visited_dirs = set()
+        
+        # CRITICAL FIX: Follow symlinks! Many doc repos use symlinked 'modules' directories
+        for root, dirs, files in os.walk(self.target_dir, followlinks=True):
+            # Resolve the real path to detect loops
+            real_root = os.path.realpath(root)
+            
+            # Prevent infinite loops from circular symlinks
+            if real_root in visited_dirs:
+                if self.debug:
+                    print(f"  DEBUG: Skipping already visited directory (symlink loop): {root}")
+                dirs[:] = []  # Don't descend into this directory
+                continue
+            visited_dirs.add(real_root)
+            
             # Skip hidden directories
             dirs[:] = [d for d in dirs if not d.startswith('.')]
             

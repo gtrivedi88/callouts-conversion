@@ -101,7 +101,7 @@ chmod +x callouts_orchestrator.py
 The tool operates in three phases:
 
 ### Phase 1: Scan & Classify
-- Recursively scans all `.adoc` files
+- Recursively scans all `.adoc` files **(follows symlinks!)**
 - Detects code blocks with callouts
 - Classifies each block as:
   - **Automatable**: Safe to convert automatically
@@ -140,10 +140,12 @@ The tool automatically detects and handles:
 ### File System Issues
 - **Empty files** → Skip
 - **Binary files** → Skip
-- **Symlinks** → Skip
+- **Symlinks** → Follow (with loop detection)
 - **Large files** (>50MB) → Skip
 - **Encoding issues** → Try fallback encoding
 - **Permission errors** → Log and continue
+
+> **Note:** The tool follows symbolic links to handle documentation repositories that use symlinked `modules/` directories. Circular symlink loops are automatically detected and prevented.
 
 ## Output Files
 
