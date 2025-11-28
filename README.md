@@ -40,6 +40,8 @@ namespace:: Specifies the namespace
 
 - **Multi-Language Support**: Handles YAML, JSON, bash/shell, Python, Go, and generic text/conf files  
 - **Smart Classification**: Automatically detects which files can be safely converted  
+- **Assembly Mode**: Only convert modules referenced by assemblies (perfect for doc repos with shared modules)
+- **Symlink Support**: Follows symbolic links with circular loop detection
 - **Edge Case Handling**: Detects and flags complex cases for manual review  
 - **World-Class Engineering**: DRY principles, shared utilities, zero code duplication  
 - **Proactive Detection**: Catches issues BEFORE conversion (comment-only callouts, semantic placeholders)  
@@ -89,6 +91,25 @@ chmod +x callouts_orchestrator.py
 ```bash
 ./callouts_orchestrator.py /path/to/docs/ --dry-run
 ```
+
+### Assembly Mode (Recommended for Doc Repos)
+
+Use `--assembly-mode` when your target directory contains assemblies that include modules from a shared `modules/` directory. This converts **only** the modules referenced by those assemblies, not all files in the shared folder.
+
+```bash
+./callouts_orchestrator.py /path/to/assembly-dir/ --assembly-mode --dry-run
+```
+
+**Example scenario:**
+```
+oadp-use-cases/
+├── assembly-backup.adoc          # Assembly file
+├── assembly-restore.adoc         # Assembly file  
+└── modules -> ../../../modules/  # Symlink to shared modules (7000+ files)
+```
+
+Without `--assembly-mode`: Converts all 7000+ files in modules/
+With `--assembly-mode`: Converts only the ~10 modules referenced by the assemblies
 
 ### Debug Mode
 
@@ -188,6 +209,13 @@ After running, you'll get:
 ./callouts_orchestrator.py /path/to/docs/ --debug > debug.log 2>&1
 ```
 
+### Example 5: Assembly Mode
+```bash
+# Only convert modules referenced by assemblies in oadp-use-cases/
+./callouts_orchestrator.py /path/to/docs --assembly-mode --dry-run
+
+```
+
 ## Language-Specific Behavior
 
 ### YAML/JSON
@@ -238,6 +266,14 @@ chmod +x callouts_orchestrator.py
 3. Wrong directory specified
 
 **Solution**: Check the classification summary and review `manual_review_*.txt`
+
+### Issue: Converting too many files (thousands instead of expected few)
+**Cause**: Running without `--assembly-mode` on a directory with symlinked modules
+
+**Solution**: Use `--assembly-mode` to only convert modules referenced by assemblies:
+```bash
+./callouts_orchestrator.py /path/to/assembly-dir/ --assembly-mode --dry-run
+```
 
 ### Issue: "Incomplete conversion"
 **Meaning**: The converter couldn't match all markers to terms  
