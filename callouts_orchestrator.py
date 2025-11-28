@@ -7,10 +7,17 @@ This script automatically:
 2. Classifies them as automatable vs. manual review needed
 3. Routes to appropriate converters (YAML, JSON, bash, etc.)
 4. Generates comprehensive reports
+
+Modes:
+- Default: Scan all .adoc files in target directory (follows symlinks)
+- Assembly mode (--assembly-mode): Only convert modules referenced by assemblies
+  in the target directory. This is useful when you want to convert only the
+  modules that are actually used by a specific set of assemblies.
 """
 
 import sys
 import os
+import re
 import argparse
 from pathlib import Path
 from collections import defaultdict
@@ -34,10 +41,14 @@ except ImportError as e:
 
 
 class CalloutsOrchestrator:
-    def __init__(self, target_dir, dry_run=False, debug=False):
+    def __init__(self, target_dir, dry_run=False, debug=False, assembly_mode=False):
         self.target_dir = Path(target_dir).resolve()
         self.dry_run = dry_run
         self.debug = debug
+        self.assembly_mode = assembly_mode
+        
+        # For assembly mode: track which files to process
+        self.files_to_process = set()
         
         # Statistics
         self.stats = {
@@ -47,7 +58,9 @@ class CalloutsOrchestrator:
             'files_manual_review': defaultdict(list),
             'files_skipped': defaultdict(list),
             'files_with_errors': [],
-            'blocks_converted': defaultdict(int)
+            'blocks_converted': defaultdict(int),
+            'assemblies_found': 0,
+            'includes_resolved': 0
         }
         
         # Classification results
@@ -69,6 +82,122 @@ class CalloutsOrchestrator:
             return False
         
         return True
+    
+    def extract_includes_from_file(self, file_path):
+        """
+        Extract all include:: directives from an AsciiDoc file.
+        Returns a list of resolved file paths.
+        """
+        includes = []
+        include_pattern = re.compile(r'^include::([^\[]+)\[', re.MULTILINE)
+        
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+        except Exception as e:
+            if self.debug:
+                print(f"  DEBUG: Error reading {file_path}: {e}")
+            return includes
+        
+        for match in include_pattern.finditer(content):
+            include_path = match.group(1).strip()
+            
+            # Skip attribute references like {snippets-dir}/...
+            if '{' in include_path:
+                if self.debug:
+                    print(f"  DEBUG: Skipping attribute-based include: {include_path}")
+                continue
+            
+            # Resolve the path relative to the file's directory
+            file_dir = Path(file_path).parent
+            resolved_path = (file_dir / include_path).resolve()
+            
+            # Check if file exists (following symlinks)
+            if resolved_path.exists():
+                includes.append(resolved_path)
+                if self.debug:
+                    print(f"  DEBUG: Resolved include: {include_path} -> {resolved_path}")
+            else:
+                if self.debug:
+                    print(f"  DEBUG: Include not found: {include_path} (tried {resolved_path})")
+        
+        return includes
+    
+    def is_assembly_file(self, file_path):
+        """
+        Check if a file is an assembly file (contains :_mod-docs-content-type: ASSEMBLY).
+        """
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                # Read first 20 lines to check for assembly marker
+                for i, line in enumerate(f):
+                    if i > 20:
+                        break
+                    if ':_mod-docs-content-type: ASSEMBLY' in line:
+                        return True
+        except Exception:
+            pass
+        return False
+    
+    def collect_assembly_includes(self):
+        """
+        In assembly mode, find all assemblies in target directory and collect
+        their included module files (recursively).
+        """
+        print(f"📂 Assembly Mode: Scanning for assemblies in {self.target_dir}")
+        
+        visited = set()
+        
+        def collect_recursive(file_path, depth=0):
+            """Recursively collect includes from a file."""
+            real_path = Path(file_path).resolve()
+            
+            if real_path in visited:
+                return
+            visited.add(real_path)
+            
+            # Add this file to the processing list
+            self.files_to_process.add(real_path)
+            
+            # Get includes from this file
+            includes = self.extract_includes_from_file(real_path)
+            self.stats['includes_resolved'] += len(includes)
+            
+            # Recursively process includes
+            for include_path in includes:
+                if include_path.suffix.lower() in ('.adoc', '.asciidoc'):
+                    collect_recursive(include_path, depth + 1)
+        
+        # Find all assembly files in the target directory (NOT following symlinks for assemblies)
+        for root, dirs, files in os.walk(self.target_dir):
+            # Skip hidden directories
+            dirs[:] = [d for d in dirs if not d.startswith('.')]
+            
+            # Don't follow symlinks when looking for assemblies
+            # We only want assemblies that are physically in the target directory
+            real_root = os.path.realpath(root)
+            if real_root != root and not root.startswith(str(self.target_dir)):
+                continue
+            
+            for filename in files:
+                if not filename.lower().endswith(('.adoc', '.asciidoc')):
+                    continue
+                
+                file_path = Path(root) / filename
+                
+                # Check if it's an assembly
+                if self.is_assembly_file(file_path):
+                    self.stats['assemblies_found'] += 1
+                    if self.debug:
+                        print(f"  📄 Found assembly: {file_path}")
+                    
+                    # Collect all includes from this assembly
+                    collect_recursive(file_path)
+        
+        print(f"   Found {self.stats['assemblies_found']} assemblies")
+        print(f"   Resolved {self.stats['includes_resolved']} includes")
+        print(f"   Total files to process: {len(self.files_to_process)}")
+        print("=" * 70)
     
     def is_valid_adoc_file(self, file_path):
         """
@@ -189,62 +318,76 @@ class CalloutsOrchestrator:
         print(f"🔍 Scanning directory: {self.target_dir}")
         print("=" * 70)
         
-        # Track visited directories to prevent infinite symlink loops
+        # In assembly mode, first collect the files to process
+        if self.assembly_mode:
+            self.collect_assembly_includes()
+            files_to_scan = self.files_to_process
+        else:
+            # Default mode: scan all files (following symlinks)
+            files_to_scan = self._collect_all_files()
+        
+        # Now classify each file
+        for file_path in files_to_scan:
+            file_path = Path(file_path)
+            self.stats['total_files_scanned'] += 1
+            
+            # Validate file
+            if not self.is_valid_adoc_file(file_path):
+                continue
+            
+            # Classify
+            automatable_langs, manual_issues, error = self.classify_file(file_path)
+            
+            if error:
+                self.stats['files_with_errors'].append((str(file_path), error))
+                continue
+            
+            if automatable_langs is None and manual_issues is None:
+                # No source blocks
+                continue
+            
+            self.stats['files_with_source_blocks'] += 1
+            
+            # NEW LOGIC: Add to automatable list even if file has some manual blocks
+            # This allows block-level processing to convert what it can
+            if automatable_langs:
+                for lang in automatable_langs:
+                    self.automatable_by_lang[lang].add(str(file_path))
+            
+            # Also log manual review issues for reporting
+            if manual_issues:
+                for issue_type, reason in manual_issues:
+                    self.manual_review_files[issue_type].append((str(file_path), reason))
+        
+        # Print classification summary
+        self._print_classification_summary()
+    
+    def _collect_all_files(self):
+        """
+        Collect all .adoc files in the target directory.
+        Follows symlinks but prevents infinite loops.
+        """
+        files = set()
         visited_dirs = set()
         
-        # CRITICAL FIX: Follow symlinks! Many doc repos use symlinked 'modules' directories
-        for root, dirs, files in os.walk(self.target_dir, followlinks=True):
-            # Resolve the real path to detect loops
+        for root, dirs, filenames in os.walk(self.target_dir, followlinks=True):
+            # Resolve real path to detect symlink loops
             real_root = os.path.realpath(root)
-            
-            # Prevent infinite loops from circular symlinks
             if real_root in visited_dirs:
                 if self.debug:
-                    print(f"  DEBUG: Skipping already visited directory (symlink loop): {root}")
-                dirs[:] = []  # Don't descend into this directory
+                    print(f"  DEBUG: Skipping symlink loop: {root}")
+                dirs[:] = []  # Don't descend further
                 continue
             visited_dirs.add(real_root)
             
             # Skip hidden directories
             dirs[:] = [d for d in dirs if not d.startswith('.')]
             
-            for filename in files:
-                if not filename.lower().endswith(('.adoc', '.asciidoc')):
-                    continue
-                
-                file_path = Path(root) / filename
-                self.stats['total_files_scanned'] += 1
-                
-                # Validate file
-                if not self.is_valid_adoc_file(file_path):
-                    continue
-                
-                # Classify
-                automatable_langs, manual_issues, error = self.classify_file(file_path)
-                
-                if error:
-                    self.stats['files_with_errors'].append((str(file_path), error))
-                    continue
-                
-                if automatable_langs is None and manual_issues is None:
-                    # No source blocks
-                    continue
-                
-                self.stats['files_with_source_blocks'] += 1
-                
-                # NEW LOGIC: Add to automatable list even if file has some manual blocks
-                # This allows block-level processing to convert what it can
-                if automatable_langs:
-                    for lang in automatable_langs:
-                        self.automatable_by_lang[lang].add(str(file_path))
-                
-                # Also log manual review issues for reporting
-                if manual_issues:
-                    for issue_type, reason in manual_issues:
-                        self.manual_review_files[issue_type].append((str(file_path), reason))
+            for filename in filenames:
+                if filename.lower().endswith(('.adoc', '.asciidoc')):
+                    files.add(Path(root) / filename)
         
-        # Print classification summary
-        self._print_classification_summary()
+        return files
     
     def _print_classification_summary(self):
         """Print the classification phase summary"""
@@ -632,10 +775,19 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s /path/to/docs/                    # Convert all files
+  %(prog)s /path/to/docs/                    # Convert all files in directory
   %(prog)s /path/to/docs/ --dry-run          # Preview without changes
   %(prog)s /path/to/docs/ --debug            # Show detailed debug info
   %(prog)s .                                 # Convert current directory
+
+Assembly Mode (recommended for doc repos with shared modules):
+  %(prog)s /path/to/assembly-dir/ --assembly-mode
+  
+  This mode:
+  1. Finds all assembly files in the target directory
+  2. Parses include:: directives to find referenced modules
+  3. Only converts the modules that are actually included
+  4. Ignores the thousands of other modules in shared directories
         """
     )
     
@@ -656,16 +808,31 @@ Examples:
         help='Enable debug output'
     )
     
+    parser.add_argument(
+        '--assembly-mode',
+        action='store_true',
+        help='Only convert modules referenced by assemblies in target directory. '
+             'Use this when your target directory contains assemblies that include '
+             'modules from a shared modules/ directory.'
+    )
+    
     args = parser.parse_args()
     
     print("=" * 70)
     print("ASCIIDOC CALLOUTS CONVERSION ORCHESTRATOR")
     print("=" * 70)
     
+    if args.assembly_mode:
+        print("📦 Mode: ASSEMBLY (only converting referenced modules)")
+    else:
+        print("📦 Mode: DEFAULT (converting all files)")
+    print("=" * 70)
+    
     orchestrator = CalloutsOrchestrator(
         target_dir=args.target_dir,
         dry_run=args.dry_run,
-        debug=args.debug
+        debug=args.debug,
+        assembly_mode=args.assembly_mode
     )
     
     return orchestrator.run()

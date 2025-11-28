@@ -145,7 +145,7 @@ def process_file(file_path, debug=False):
             
             # Clean source lines using shared utility
             cleaned_source_lines = [clean_source_line(line, 'yaml') for line in source_lines]
-            cleaned_source = '\n'.join(cleaned_source_lines)
+            cleaned_source = '\n'.join(cleaned_source_lines)            
             
             new_block, complete = convert_yaml_block(match, terms, cleaned_source, debug)
             if not complete:
@@ -174,8 +174,8 @@ def process_file(file_path, debug=False):
         try:
             with open(file_path, 'w', encoding='utf-8') as f:
                 f.write(modified_content)
-            if debug and skipped_blocks > 0:
-                print(f"Debug: Converted {converted_blocks} blocks, skipped {skipped_blocks} blocks")
+                if debug and skipped_blocks > 0:
+                    print(f"Debug: Converted {converted_blocks} blocks, skipped {skipped_blocks} blocks")
             return True, 0
         except Exception as e:
             print(f"Error: Cannot write to {file_path}: {e}", file=sys.stderr)
