@@ -41,11 +41,15 @@ except ImportError as e:
 
 
 class CalloutsOrchestrator:
-    def __init__(self, target_dir, dry_run=False, debug=False, assembly_mode=False):
-        self.target_dir = Path(target_dir).resolve()
+    def __init__(self, target_path, dry_run=False, debug=False, assembly_mode=False):
+        self.target_path = Path(target_path).resolve()
         self.dry_run = dry_run
         self.debug = debug
         self.assembly_mode = assembly_mode
+        self.single_file_mode = self.target_path.is_file()
+        
+        # For directory mode, keep target_dir for compatibility
+        self.target_dir = self.target_path if not self.single_file_mode else self.target_path.parent
         
         # For assembly mode: track which files to process
         self.files_to_process = set()
@@ -68,18 +72,33 @@ class CalloutsOrchestrator:
         self.manual_review_files = defaultdict(list)
         
     def validate_environment(self):
-        """Validate the target directory exists and is accessible"""
-        if not self.target_dir.exists():
-            print(f"❌ Error: Target directory does not exist: {self.target_dir}")
+        """Validate the target path exists and is accessible"""
+        if not self.target_path.exists():
+            print(f"❌ Error: Target path does not exist: {self.target_path}")
             return False
         
-        if not self.target_dir.is_dir():
-            print(f"❌ Error: Target path is not a directory: {self.target_dir}")
-            return False
-        
-        if not os.access(self.target_dir, os.R_OK):
-            print(f"❌ Error: No read permission for directory: {self.target_dir}")
-            return False
+        if self.single_file_mode:
+            # Single file validation
+            if not self.target_path.suffix.lower() in ('.adoc', '.asciidoc'):
+                print(f"❌ Error: File is not an AsciiDoc file: {self.target_path}")
+                return False
+            
+            if not os.access(self.target_path, os.R_OK):
+                print(f"❌ Error: No read permission for file: {self.target_path}")
+                return False
+            
+            if self.assembly_mode:
+                print(f"⚠️  Warning: --assembly-mode is ignored for single file processing")
+                self.assembly_mode = False
+        else:
+            # Directory validation
+            if not self.target_path.is_dir():
+                print(f"❌ Error: Target path is not a directory: {self.target_path}")
+                return False
+            
+            if not os.access(self.target_path, os.R_OK):
+                print(f"❌ Error: No read permission for directory: {self.target_path}")
+                return False
         
         return True
     
@@ -754,6 +773,10 @@ class CalloutsOrchestrator:
         if not self.validate_environment():
             return 1
         
+        # Single file mode - simplified workflow
+        if self.single_file_mode:
+            return self.run_single_file()
+        
         # Phase 1: Scan and classify
         self.scan_and_classify()
         
@@ -767,6 +790,65 @@ class CalloutsOrchestrator:
         self.print_final_summary()
         
         return 0
+    
+    def run_single_file(self):
+        """Process a single file directly"""
+        file_path = self.target_path
+        print(f"🔍 Processing single file: {file_path}")
+        print("=" * 70)
+        
+        # Validate it's an AsciiDoc file with callouts
+        if not self.is_valid_adoc_file(file_path):
+            print(f"❌ Error: Invalid or unreadable file")
+            return 1
+        
+        # Classify the file
+        automatable_langs, manual_issues, error = self.classify_file(file_path)
+        
+        if error:
+            print(f"❌ Error analyzing file: {error}")
+            return 1
+        
+        if automatable_langs is None and manual_issues is None:
+            print(f"ℹ️  No source blocks with callouts found in file")
+            return 0
+        
+        # Report what we found
+        print(f"\n📊 Analysis Results:")
+        if automatable_langs:
+            print(f"   ✅ Automatable blocks: {', '.join(sorted(automatable_langs)).upper()}")
+        if manual_issues:
+            print(f"   ⚠️  Issues found:")
+            for issue_type, reason in manual_issues:
+                print(f"      - {issue_type}: {reason}")
+        
+        # Convert if there are automatable blocks
+        if automatable_langs:
+            if self.dry_run:
+                print(f"\n🔄 [DRY RUN] Would convert file")
+                print(f"   Languages: {', '.join(sorted(automatable_langs)).upper()}")
+            else:
+                print(f"\n🔄 Converting...")
+                success, blocks_converted, blocks_skipped = self.convert_file_blocks(file_path, debug=self.debug)
+                
+                if blocks_converted > 0:
+                    print(f"   ✅ Successfully converted {blocks_converted} block(s)")
+                    if blocks_skipped:
+                        print(f"   ⏭️  Skipped {len(blocks_skipped)} block(s)")
+                        if self.debug:
+                            for reason in blocks_skipped:
+                                print(f"      - {reason}")
+                else:
+                    print(f"   ⚠️  No blocks were converted")
+                    if blocks_skipped:
+                        print(f"   Reasons:")
+                        for reason in blocks_skipped[:5]:  # Show first 5
+                            print(f"      - {reason}")
+        else:
+            print(f"\nℹ️  No automatable blocks found. Manual review required.")
+        
+        print()
+        return 0
 
 
 def main():
@@ -775,12 +857,17 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  Single File:
+  %(prog)s /path/to/file.adoc                # Convert a single file
+  %(prog)s /path/to/file.adoc --dry-run      # Preview changes for a single file
+
+  Directory:
   %(prog)s /path/to/docs/                    # Convert all files in directory
   %(prog)s /path/to/docs/ --dry-run          # Preview without changes
   %(prog)s /path/to/docs/ --debug            # Show detailed debug info
   %(prog)s .                                 # Convert current directory
 
-Assembly Mode (recommended for doc repos with shared modules):
+  Assembly Mode (recommended for doc repos with shared modules):
   %(prog)s /path/to/assembly-dir/ --assembly-mode
   
   This mode:
@@ -792,8 +879,8 @@ Assembly Mode (recommended for doc repos with shared modules):
     )
     
     parser.add_argument(
-        'target_dir',
-        help='Directory to scan for AsciiDoc files'
+        'target_path',
+        help='File or directory to process (single .adoc file or directory of files)'
     )
     
     parser.add_argument(
@@ -822,14 +909,17 @@ Assembly Mode (recommended for doc repos with shared modules):
     print("ASCIIDOC CALLOUTS CONVERSION ORCHESTRATOR")
     print("=" * 70)
     
-    if args.assembly_mode:
+    target = Path(args.target_path).resolve()
+    if target.is_file():
+        print(f"📦 Mode: SINGLE FILE")
+    elif args.assembly_mode:
         print("📦 Mode: ASSEMBLY (only converting referenced modules)")
     else:
         print("📦 Mode: DEFAULT (converting all files)")
     print("=" * 70)
     
     orchestrator = CalloutsOrchestrator(
-        target_dir=args.target_dir,
+        target_path=args.target_path,
         dry_run=args.dry_run,
         debug=args.debug,
         assembly_mode=args.assembly_mode

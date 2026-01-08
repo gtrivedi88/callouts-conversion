@@ -38,12 +38,12 @@ namespace:: Specifies the namespace
 
 ## Features
 
+- **Single File or Directory**: Process a single file or an entire directory
 - **Multi-Language Support**: Handles YAML, JSON, bash/shell, Python, Go, and generic text/conf files  
 - **Smart Classification**: Automatically detects which files can be safely converted  
 - **Assembly Mode**: Only convert modules referenced by assemblies (perfect for doc repos with shared modules)
 - **Symlink Support**: Follows symbolic links with circular loop detection
 - **Edge Case Handling**: Detects and flags complex cases for manual review  
-- **World-Class Engineering**: DRY principles, shared utilities, zero code duplication  
 - **Proactive Detection**: Catches issues BEFORE conversion (comment-only callouts, semantic placeholders)  
 - **Dry-Run Mode**: Preview changes before applying  
 - **Comprehensive Reports**: Detailed summaries of what was converted and what needs review  
@@ -79,6 +79,17 @@ chmod +x callouts_orchestrator.py
 ```
 
 ## Quick Start
+
+### Convert a Single File
+
+```bash
+./callouts_orchestrator.py /path/to/file.adoc
+```
+
+Preview changes first:
+```bash
+./callouts_orchestrator.py /path/to/file.adoc --dry-run
+```
 
 ### Convert All Files in a Directory
 
@@ -185,17 +196,22 @@ After running, you'll get:
 
 ## Examples
 
-### Example 1: Convert Current Directory
+### Example 1: Convert a Single File
+```bash
+./callouts_orchestrator.py /path/to/my-module.adoc
+```
+
+### Example 2: Convert Current Directory
 ```bash
 ./callouts_orchestrator.py .
 ```
 
-### Example 2: Convert Specific Module
+### Example 3: Convert Specific Directory
 ```bash
 ./callouts_orchestrator.py /path/to/openshift-docs/modules/
 ```
 
-### Example 3: Preview Before Converting
+### Example 4: Preview Before Converting
 ```bash
 # First, see what would change
 ./callouts_orchestrator.py /path/to/docs/ --dry-run
@@ -204,16 +220,15 @@ After running, you'll get:
 ./callouts_orchestrator.py /path/to/docs/
 ```
 
-### Example 4: Debug Problematic Files
+### Example 5: Debug Problematic Files
 ```bash
 ./callouts_orchestrator.py /path/to/docs/ --debug > debug.log 2>&1
 ```
 
-### Example 5: Assembly Mode
+### Example 6: Assembly Mode
 ```bash
 # Only convert modules referenced by assemblies in oadp-use-cases/
 ./callouts_orchestrator.py /path/to/docs --assembly-mode --dry-run
-
 ```
 
 ## Language-Specific Behavior
