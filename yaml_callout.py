@@ -46,7 +46,13 @@ def extract_terms_from_source(source_lines):
         if marker_num in terms:
             raise ValueError(get_error_message('duplicate_marker', f'Marker {marker_num} on line {line_num}'))
         
-        pre_marker = line[:line.find('<')]
+        # Find the position of the callout marker <N>, not just any <
+        # This handles cases where placeholders like __<value>__ contain <
+        marker_match = re.search(r'<\d+>', line)
+        if marker_match:
+            pre_marker = line[:marker_match.start()]
+        else:
+            pre_marker = line[:line.find('<')]
         
         # Edge case: Comment-only line (just # with whitespace)
         if re.match(r'^#\s*$', pre_marker.strip()):

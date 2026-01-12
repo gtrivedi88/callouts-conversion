@@ -21,6 +21,7 @@ def extract_terms_from_source(source_lines):
     Extract term names from generic text/config source lines before callout markers.
     
     Generic handling for text/conf files:
+    - Placeholder patterns: __<value>__ <1> -> "__<value>__"
     - Key-value pairs: key=value <1> or key: value <1>
     - Simple lines: any text before marker
     - Config directives: DIRECTIVE value <1>
@@ -44,7 +45,21 @@ def extract_terms_from_source(source_lines):
         if marker_num in terms:
             raise ValueError(get_error_message('duplicate_marker', f'Marker {marker_num} on line {line_num}'))
         
-        pre_marker = line[:line.find('<')].strip()
+        # Find the position of the callout marker <N>, not just any <
+        # This handles cases where placeholders like __<value>__ contain <
+        marker_match = re.search(r'<\d+>', line)
+        if marker_match:
+            pre_marker = line[:marker_match.start()].strip()
+        else:
+            pre_marker = line[:line.find('<')].strip()
+        
+        # Priority 0: AsciiDoc placeholder patterns (__<placeholder>__)
+        # These are documentation placeholders that should be preserved as-is
+        placeholder_match = re.search(r'(__<[^>]+>__)', pre_marker)
+        if placeholder_match:
+            term = placeholder_match.group(1)
+            terms[marker_num] = term
+            continue
         
         # Pattern 1: Key-value with = or :
         kv_match = re.search(r'([A-Za-z0-9_\-\.]+)\s*[=:]', pre_marker)
@@ -67,7 +82,13 @@ def extract_terms_from_source(source_lines):
             terms[marker_num] = term
             continue
         
-        # Fallback: use entire pre-marker content (up to 50 chars)
+        # Fallback: Look for any placeholder-like pattern
+        fallback_placeholder = re.search(r'(__[a-zA-Z0-9_]+__)', pre_marker)
+        if fallback_placeholder:
+            terms[marker_num] = fallback_placeholder.group(1)
+            continue
+        
+        # Last fallback: use entire pre-marker content (up to 50 chars)
         if pre_marker:
             term = pre_marker[:50].strip()
             if term:

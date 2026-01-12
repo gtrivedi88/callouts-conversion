@@ -21,17 +21,20 @@ def extract_terms_from_source(source_lines):
     Extract term names from shell/bash source lines before callout markers.
     
     Uses Specificity-First Logic:
-    1. Variable assignments (VAR=value) - most specific
-    2. Flags (--flag or --flag=value) - medium specificity
-    3. Commands (first token) - least specific
+    1. Placeholder patterns (__<value>__) - highest priority for doc placeholders
+    2. Variable assignments (VAR=value) - most specific code construct
+    3. Flags (--flag or --flag=value) - medium specificity
+    4. Key-value pairs (key: value) - for embedded YAML/JSON
+    5. AsciiDoc passthrough content - handle pass:c,a,q[...] syntax
+    6. Commands (first token) - least specific
     
     Shell-specific handling:
+    - Placeholders: __<value>__ <1> -> "__<value>__"
     - Variables: export VAR=value <1> -> "VAR"
     - Options/flags: --namespace=default <1> -> "--namespace"
     - Commands: oc create -f file.yaml <1> -> "oc"
-    - Quoted strings: "url" <1> -> extract domain or meaningful part
+    - Passthrough: pass:c,a,q[{url}] <1> -> use context or URL parameter
     - Comment-only callouts -> generic term
-    - Semantic placeholders -> flagged
     """
     # First, check for edge cases
     has_issues, issue_type, issue_desc = detect_edge_cases(source_lines)
@@ -50,7 +53,13 @@ def extract_terms_from_source(source_lines):
         if marker_num in terms:
             raise ValueError(get_error_message('duplicate_marker', f'Marker {marker_num} on line {line_num}'))
         
-        pre_marker = line[:line.find('<')].strip()
+        # Find the position of the callout marker <N>, not just any <
+        # This handles cases where placeholders like __<value>__ contain <
+        marker_match = re.search(r'<\d+>', line)
+        if marker_match:
+            pre_marker = line[:marker_match.start()].strip()
+        else:
+            pre_marker = line[:line.find('<')].strip()
         
         # Remove prompt characters ($ or #) if present
         pre_marker = re.sub(r'^\s*[$#]\s*', '', pre_marker)
@@ -65,7 +74,48 @@ def extract_terms_from_source(source_lines):
         
         # SPECIFICITY-FIRST LOGIC: Check patterns from most specific to least specific
         
-        # Priority 1: Variable assignments (most specific)
+        # Priority 0: AsciiDoc passthrough syntax (pass:c,a,q[...])
+        # This is used for URLs and special content - extract the meaningful part
+        passthrough_match = re.search(r'pass:[a-z,]+\[([^\]]+)\]', pre_marker)
+        if passthrough_match:
+            passthrough_content = passthrough_match.group(1)
+            # Check if there's a URL parameter after the passthrough (like ?param=value)
+            url_param_match = re.search(r'\?([a-zA-Z_][a-zA-Z0-9_]*)', line)
+            if url_param_match:
+                # If there's a URL parameter, use the full URL structure as term
+                if '#' in line:
+                    terms[marker_num] = f"pass:c,a,q[{{prod-url}}]"
+                else:
+                    terms[marker_num] = passthrough_content
+            else:
+                terms[marker_num] = f"pass:c,a,q[{passthrough_content}]"
+            continue
+        
+        # Priority 0.5: URL fragments and comments in URL blocks
+        # Handle lines like #https://... or ?param=value
+        if pre_marker.startswith('#http') or pre_marker.startswith('http'):
+            terms[marker_num] = f"#https://..."
+            continue
+        
+        if pre_marker.startswith('?'):
+            terms[marker_num] = f"?<optional_parameters>"
+            continue
+        
+        # Priority 1: Standalone placeholders (__<placeholder>__)
+        # When a placeholder is the primary content (not part of key:value or flag)
+        # This handles lines like: $ __<git_repository_url>__
+        # But NOT: key: __<value>__ (handled by key-value pattern)
+        # Check if placeholder is at the start or is the main content
+        if not re.search(r'^[a-zA-Z0-9_\-\.]+\s*:', pre_marker.strip()):
+            # Not a key:value pattern, check for standalone placeholder
+            placeholder_match = re.search(r'(__<[^>]+>__)', pre_marker)
+            if placeholder_match:
+                # Verify it's the main content (not just a value in an assignment)
+                if not re.search(r'\b[A-Z_][A-Z0-9_]*\s*=', pre_marker):
+                    terms[marker_num] = placeholder_match.group(1)
+                    continue
+        
+        # Priority 1.5: Variable assignments
         # Patterns: VAR=value, export VAR=value, VAR="value"
         # Extract: VAR
         var_match = re.search(r'\b([A-Z_][A-Z0-9_]*)\s*=', pre_marker)
@@ -74,11 +124,18 @@ def extract_terms_from_source(source_lines):
             terms[marker_num] = term
             continue
         
-        # Priority 2: Flags/options (medium specificity)
+        # Priority 2: Flags/options with placeholder arguments
+        # If a flag is followed by a placeholder like __<value>__, extract the placeholder
+        # since that's what the callout is explaining
+        # Patterns: --flag __<value>__, --flag=__<value>__
+        flag_with_placeholder = re.search(r'(?:^|\s)-{1,2}[a-zA-Z][a-zA-Z0-9_\-]*\s+(__<[^>]+>__)', pre_marker)
+        if flag_with_placeholder:
+            terms[marker_num] = flag_with_placeholder.group(1)
+            continue
+        
+        # Priority 2.5: Standalone flags (without placeholder arguments)
         # Patterns: --flag, --flag=value, -f
-        # Extract: just the flag name (stop before =, space, or special chars)
-        # Look for standalone flags (preceded by whitespace or start of string)
-        # Prioritize --flags over -flags to avoid matching dashes in command names
+        # Extract: just the flag name
         flag_match = re.search(r'(?:^|\s)(-{1,2}[a-zA-Z][a-zA-Z0-9_\-]*)', pre_marker)
         if flag_match:
             term = flag_match.group(1)
@@ -91,11 +148,20 @@ def extract_terms_from_source(source_lines):
         
         # Priority 3: Key-value pairs (for echo'd YAML/JSON in shell blocks)
         # Patterns: key: value, name: "demo", secret: "..."
+        # But NOT for lines that start with [ which are config sections
         # Extract: key (not the value)
-        # This must come BEFORE quoted strings to avoid extracting the value instead of the key
-        kv_match = re.search(r'^([a-zA-Z0-9_\-\.]+)\s*:', pre_marker.strip())
-        if kv_match:
-            term = kv_match.group(1)
+        if not pre_marker.strip().startswith('['):
+            kv_match = re.search(r'^([a-zA-Z0-9_\-\.]+)\s*:', pre_marker.strip())
+            if kv_match:
+                term = kv_match.group(1)
+                terms[marker_num] = term
+                continue
+        
+        # Priority 3.5: Config section headers like [section.name]
+        # Extract the full section header
+        section_match = re.search(r'(\[[^\]]+\])', pre_marker)
+        if section_match:
+            term = section_match.group(1)
             terms[marker_num] = term
             continue
         
@@ -131,7 +197,14 @@ def extract_terms_from_source(source_lines):
             terms[marker_num] = term
             continue
         
-        # Fallback: If nothing matches, use generic term
+        # Fallback: Look for any placeholder-like pattern as last resort
+        # This catches cases like __value__ without angle brackets
+        fallback_placeholder = re.search(r'(__[a-zA-Z0-9_]+__)', pre_marker)
+        if fallback_placeholder:
+            terms[marker_num] = fallback_placeholder.group(1)
+            continue
+        
+        # Last resort fallback: If nothing matches, use generic term
         terms[marker_num] = f"parameter-{marker_num}"
     
     # Validate that all extracted terms are unique
