@@ -4,9 +4,9 @@ import os
 from collections import defaultdict
 import json
 import getopt
-from converter_utils import get_block_pattern
+from converter_utils import get_block_pattern, normalize_language
 
-SUPPORTED_LANGUAGES = ['yaml', 'json', 'yml', 'bash', 'sh', 'terminal', 'text', 'conf', 'go', 'python']
+SUPPORTED_LANGUAGES = ['yaml', 'json', 'yml', 'bash', 'sh', 'shell', 'terminal', 'console', 'text', 'conf', 'go', 'python']
 
 def analyze_block(source_content, definition_block_content, debug=False):
     """
@@ -81,7 +81,9 @@ def process_file(file_path, debug=False):
     all_blocks = []
     
     for match in pattern.finditer(content):
-        language = match.group(2).lower()
+        # Normalize language - handles empty/missing language, defaults to 'shell'
+        raw_lang = match.group(2) or ''
+        language = normalize_language(raw_lang)
         if language not in SUPPORTED_LANGUAGES:
             continue  # Skip unsupported langs early
         source_content = match.group(4)

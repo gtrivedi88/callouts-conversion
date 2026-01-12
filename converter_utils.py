@@ -216,18 +216,50 @@ def get_block_pattern():
     
     This pattern is used by BOTH the classifier and all converters to ensure consistency.
     
+    Matches the following block types:
+    1. [source,yaml,subs=...] - standard with language
+    2. [source,terminal,subs=...] - terminal language  
+    3. [source,subs=...] - no language, has subs (defaults to 'shell')
+    4. [source] - no language, no subs (defaults to 'shell')
+    5. [subs=...] - no source prefix (defaults to 'shell')
+    
+    Does NOT match:
+    - [id=...], [role=...] or other non-source/subs blocks
+    
     Returns:
         re.Pattern: Compiled regex pattern
     """
     pattern_string = (
-        r'(\s*\[source,([a-zA-Z0-9_\-]+).*?\n)'
+        # Group 1: Full header line
+        # Matches: [source,lang,...] OR [source,subs=...] OR [source] OR [subs=...]
+        r'(\s*\[(?:source(?:,([a-zA-Z0-9_\-]*))?|subs=)[^\]]*\]\s*\n)'
+        # Group 3: Opening delimiter (----)
         r'(\s*-{4,}\s*\n)'
+        # Group 4: Source content
         r'(.*?)\n'
+        # Closing delimiter
         r'\s*-{4,}\s*\n'
+        # Group 5: Definition content (callout explanations)
         r'(.*?)'
-        r'(?=\n\.\w|\n\[source|\n=|--|\Z)'
+        # Lookahead for end of block
+        r'(?=\n\.\w|\n\[source|\n\[subs|\n=|--|\Z)'
     )
     return re.compile(pattern_string, re.MULTILINE | re.DOTALL)
+
+
+def normalize_language(lang):
+    """
+    Normalize the language identifier, defaulting to 'shell' when empty or unspecified.
+    
+    Args:
+        lang (str): The captured language from the source block header
+        
+    Returns:
+        str: Normalized language identifier
+    """
+    if not lang or lang.startswith('subs'):
+        return 'shell'
+    return lang.lower()
 
 
 # Error messages for better user feedback

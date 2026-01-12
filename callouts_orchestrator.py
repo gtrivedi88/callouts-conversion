@@ -27,7 +27,7 @@ from datetime import datetime
 # Import our modules
 try:
     from granular_callput import analyze_block, SUPPORTED_LANGUAGES
-    from converter_utils import get_block_pattern, clean_source_line
+    from converter_utils import get_block_pattern, clean_source_line, normalize_language
     from yaml_callout import process_file as yaml_process_file
     from json_callout import process_file as json_process_file
     from shell_callout import process_file as shell_process_file
@@ -289,7 +289,9 @@ class CalloutsOrchestrator:
         has_any_blocks = False
         
         for match in pattern.finditer(content):
-            language = match.group(2).lower()
+            # Normalize language - handles empty/missing language, defaults to 'shell'
+            raw_lang = match.group(2) or ''
+            language = normalize_language(raw_lang)
             
             # Skip unsupported languages
             if language not in SUPPORTED_LANGUAGES:
@@ -462,7 +464,9 @@ class CalloutsOrchestrator:
         
         # Process each block independently
         for match in pattern.finditer(content):
-            language = match.group(2).lower()
+            # Normalize language - handles empty/missing language, defaults to 'shell'
+            raw_lang = match.group(2) or ''
+            language = normalize_language(raw_lang)
             source_content = match.group(4)
             definition_content = match.group(5)
             original_block = match.group(0)
