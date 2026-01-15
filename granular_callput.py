@@ -48,11 +48,22 @@ def analyze_block(source_content, definition_block_content, debug=False):
     unique_def_markers = {f'<{m}>' for m, _ in definition_lines}
     
     # Edge case: Duplicate markers in definitions
+    # BUT: Allow duplicates if they're in different conditional branches
+    has_conditionals = any(keyword in definition_block_content for keyword in ['ifdef::', 'ifndef::', 'ifeval::'])
     def_marker_counts = defaultdict(int)
     for marker, _ in definition_lines:
         def_marker_counts[f'<{marker}>'] += 1
-    if any(count > 1 for count in def_marker_counts.values()):
+    has_duplicates = any(count > 1 for count in def_marker_counts.values())
+    
+    if has_duplicates and not has_conditionals:
+        # True duplicates outside conditionals - can't fix
         return 'manual_ratio_mismatch', 'Duplicate definition marker found outside source block.'
+    
+    if has_duplicates and has_conditionals:
+        # Duplicates in conditional branches - flag for manual restructuring
+        # The converter can't handle this because definition lists can't have conditional terms
+        duplicates = [m for m, c in def_marker_counts.items() if c > 1]
+        return 'manual_conditional', f'Duplicate marker {duplicates[0]} in conditional branches - requires manual restructuring.'
     
     # Edge case: Mismatch between source and definition markers
     if unique_source_markers != unique_def_markers:
@@ -60,9 +71,8 @@ def analyze_block(source_content, definition_block_content, debug=False):
             print(f"  DEBUG: Source markers: {unique_source_markers}, Def markers: {unique_def_markers}")
         return 'manual_ratio_mismatch', 'Mismatch between unique source markers and definition markers.'
     
-    # Edge case: Check for conditional/ifdef blocks in definitions
-    if any(keyword in definition_block_content for keyword in ['ifdef::', 'ifndef::', 'ifeval::']):
-        return 'manual_conditional', 'Definitions contain conditional directives (ifdef/ifndef).'
+    # Note: Conditional handling is done in the duplicate markers check above
+    # Basic conditionals without duplicates will pass through and be automatable
     
     # Plain block (no markers) - not an error, just no work to do
     if len(unique_source_markers) == 0:
