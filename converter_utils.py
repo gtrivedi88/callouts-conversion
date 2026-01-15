@@ -242,7 +242,9 @@ def get_block_pattern():
         # Group 5: Definition content (callout explanations)
         r'(.*?)'
         # Lookahead for end of block
-        r'(?=\n\.\w|\n\[source|\n\[subs|\n=|--|\Z)'
+        # Note: \n\.{1,5}\s matches AsciiDoc list markers (.., ..., etc.) followed by space
+        # Note: \n\.\w matches single dot followed by word char (e.g., .Procedure)
+        r'(?=\n\.{2,5}\s|\n\.\w|\n\[source|\n\[subs|\n=|--|\Z)'
     )
     return re.compile(pattern_string, re.MULTILINE | re.DOTALL)
 
